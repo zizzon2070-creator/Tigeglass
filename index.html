@@ -803,6 +803,18 @@ async function boot(){
     ['ink','deep','petrol','teal','seafoam','bone','amber','ember','rust','brass','rose'].forEach(k=>{
       PAL[k]=new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue('--'+k).trim());
     });
+    ENV={
+      sunA:new THREE.Color('#ffd9a0'), sunB:new THREE.Color('#ff5a2e'),
+      hemiSkyA:new THREE.Color('#7fc4cf'), hemiSkyB:new THREE.Color('#16324a'),
+      hemiGndA:new THREE.Color('#caa87a'), hemiGndB:new THREE.Color('#1a2a33'),
+      fogA:new THREE.Color('#e8b48e'), fogB:new THREE.Color('#2c4257'),
+      horA:new THREE.Color('#ffab6e'), horB:new THREE.Color('#b8434a'),
+      zenA:new THREE.Color('#2e7d8c'), zenB:new THREE.Color('#0a1a2e'),
+      tintA:new THREE.Color('#ffd9b0'), tintB:new THREE.Color('#ff6a4a'),
+      cloudA:new THREE.Color('#ffd9c0'), cloudB:new THREE.Color('#4a6274'),
+      deepA:new THREE.Color('#0a3547'), deepB:new THREE.Color('#061826'),
+      shalA:new THREE.Color('#2b9d92'), shalB:new THREE.Color('#123a4a')
+    };
 
     sunLight=new THREE.DirectionalLight(0xffd9a0,3);
     sunLight.castShadow=true;
@@ -1635,18 +1647,7 @@ function buildShafts(){
 }
 
 /* ---------------- environment per-frame ---------------- */
-const ENV={
-  sunA:new THREE.Color('#ffd9a0'), sunB:new THREE.Color('#ff5a2e'),
-  hemiSkyA:new THREE.Color('#7fc4cf'), hemiSkyB:new THREE.Color('#16324a'),
-  hemiGndA:new THREE.Color('#caa87a'), hemiGndB:new THREE.Color('#1a2a33'),
-  fogA:new THREE.Color('#e8b48e'), fogB:new THREE.Color('#2c4257'),
-  horA:new THREE.Color('#ffab6e'), horB:new THREE.Color('#b8434a'),
-  zenA:new THREE.Color('#2e7d8c'), zenB:new THREE.Color('#0a1a2e'),
-  tintA:new THREE.Color('#ffd9b0'), tintB:new THREE.Color('#ff6a4a'),
-  cloudA:new THREE.Color('#ffd9c0'), cloudB:new THREE.Color('#4a6274'),
-  deepA:new THREE.Color('#0a3547'), deepB:new THREE.Color('#061826'),
-  shalA:new THREE.Color('#2b9d92'), shalB:new THREE.Color('#123a4a')
-};
+let ENV;
 function envUpdate(){
   const day=G.day, d=clamp(day,0,1), dusk=1-d;
   const sd=sunDir(day);
