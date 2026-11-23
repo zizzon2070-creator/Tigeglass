@@ -704,9 +704,13 @@ function bell(f,vol=0.3){
 }
 function whoosh(){
   if(!AC||G.muted) return;
+  if(!sfx._whooshBuf){
+    const len=AC.sampleRate*0.5, b=AC.createBuffer(1,len,AC.sampleRate), d=b.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+    sfx._whooshBuf=b;
+  }
   const t=AC.currentTime, src=AC.createBufferSource();
-  const len=AC.sampleRate*0.5, b=AC.createBuffer(1,len,AC.sampleRate), d=b.getChannelData(0);
-  for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+  src.buffer=sfx._whooshBuf;
   const f=AC.createBiquadFilter(); f.type='bandpass'; f.Q.value=1.4;
   f.frequency.setValueAtTime(280,t); f.frequency.exponentialRampToValueAtTime(1500,t+0.32);
   const g=AC.createGain(); g.gain.setValueAtTime(0.22,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.45);
@@ -821,7 +825,7 @@ async function boot(){
     sunLight.castShadow=true;
     sunLight.shadow.mapSize.set(2048,2048);
     const sc=sunLight.shadow.camera;
-    sc.left=-380; sc.right=380; sc.top=380; sc.bottom=-380; sc.near=50; sc.far=1600;
+    sc.left=-65; sc.right=65; sc.top=65; sc.bottom=-65; sc.near=10; sc.far=320; sc.updateProjectionMatrix();
     sunLight.shadow.bias=-0.0004; sunLight.shadow.normalBias=2;
     scene.add(sunLight); scene.add(sunLight.target);
     hemiLight=new THREE.HemisphereLight(0x7fc4cf,0xcaa87a,0.85);
@@ -918,6 +922,16 @@ function islet(x,z,r,terrace){
 }
 
 /* ---------------- world layout ---------------- */
+
+const BEACON_PERKS = [
+  { name: 'SWIFT CURRENT', desc: '+25% Sail & Surge Speed' },
+  { name: 'MAGNETIC SWELL', desc: '+40% Sunmote Magnet Reach' },
+  { name: 'DEEP CARGO', desc: 'Hold Capacity Expanded to 18' },
+  { name: 'SOLAR RECOVERY', desc: '+60% Stamina Recharge Rate' },
+  { name: 'DUSK ANCHOR', desc: 'The Sun Falls 30% Slower' },
+  { name: 'ETERNAL DAWN', desc: 'The Sea is Restored' }
+];
+
 const BEACON_DEFS=[
   {x:0,z:-110,cost:4,type:0},{x:125,z:-95,cost:5,type:1},{x:230,z:30,cost:6,type:2},
   {x:60,z:190,cost:7,type:3},{x:-160,z:175,cost:8,type:4},{x:-255,z:-120,cost:9,type:5}
@@ -1262,7 +1276,7 @@ function buildWater(){
     uDeep:{value:new THREE.Color('#052538')},uShallow:{value:new THREE.Color('#1f8f94')},
     uSkyHi:{value:new THREE.Color()},uSkyLo:{value:new THREE.Color()},
     uFogColor:{value:new THREE.Color()},uFogDensity:{value:0.0016},
-    uStructs:{value:structs.slice(0,16)},uBound:{value:BOUND}
+    uStructs:{value:[new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4()]},uBound:{value:BOUND}
   };
   const mat=new THREE.ShaderMaterial({uniforms:waterU,
     vertexShader:`
@@ -1292,7 +1306,7 @@ function buildWater(){
     fragmentShader:`
       uniform float uTime,uDay,uSunI,uFogDensity,uBound;
       uniform vec3 uSunDir,uSunColor,uDeep,uShallow,uSkyHi,uSkyLo,uFogColor;
-      uniform vec4 uStructs[16];
+      uniform vec4 uStructs[4];
       varying vec3 vW; varying vec3 vN; varying float vH;
 
       void main(){
@@ -1312,7 +1326,7 @@ function buildWater(){
         float fres = 0.03 + 0.97 * pow(1.0 - NdotV, 4.5);
 
         float shallow = 0.0, foam = 0.0, shade = 0.0;
-        for(int i = 0; i < 16; i++){
+        for(int i = 0; i < 4; i++){
           vec4 s = uStructs[i];
           float d = length(vW.xz - s.xy);
           shallow = max(shallow, (1.0 - smoothstep(s.z * 0.4, s.z * 2.2, d)) * s.w);
@@ -1567,8 +1581,9 @@ function updateBurst(dt){
   burst.geometry.attributes.aSize.needsUpdate=true;
   burst.geometry.attributes.aCol.needsUpdate=true;
 }
+let litBeaconsCache=[];
 function updateEmbers(dt){
-  const D=emberData, lit=beacons.filter(b=>b.lit);
+  const D=emberData, lit=litBeaconsCache;
   for(let i=0;i<D.n;i++){
     if(lit.length===0){D.life[i]=0;continue;}
     D.life[i]-=dt*0.5;
@@ -1681,9 +1696,20 @@ function buildShafts(){
 /* ---------------- environment per-frame ---------------- */
 let ENV;
 function envUpdate(){
+  // Update 4 nearest structures for water shader (spatial optimization)
+  if(waterU && structs.length > 0){
+    const bx=boatState.x, bz=boatState.z;
+    const sorted = structs.slice().sort((a,b)=>((a.x-bx)**2+(a.y-bz)**2)-((b.x-bx)**2+(b.y-bz)**2));
+    for(let i=0;i<4;i++){
+      if(sorted[i]) waterU.uStructs.value[i].copy(sorted[i]);
+      else waterU.uStructs.value[i].set(9999,9999,0,0);
+    }
+  }
   const day=G.day, d=clamp(day,0,1), dusk=1-d;
   const sd=sunDir(day);
-  sunLight.position.copy(sd).multiplyScalar(700);
+  // Center shadow camera around player action
+  sunLight.target.position.set(boatState.x, 0, boatState.z);
+  sunLight.position.set(boatState.x + sd.x*140, sd.y*140, boatState.z + sd.z*140);
   const above=smooth(clamp((sd.y+0.02)/0.12,0,1));
   sunLight.intensity=lerp(0.18,3.1,above)*lerp(0.55,1,d);
   sunLight.color.copy(C1.copy(ENV.sunB).lerp(ENV.sunA,smooth(clamp(sd.y/0.35,0,1))));
@@ -1800,6 +1826,7 @@ function collectMote(m){
 }
 function ignite(b){
   b.lit=true; G.litCount++;
+  if(!litBeaconsCache.includes(b)) litBeaconsCache.push(b);
   b.flame.visible=true; b.light.intensity=0; b.pillarT=0;
   drawRune(b);
   G.day=Math.min(1,G.day+0.04);
@@ -1811,7 +1838,15 @@ function ignite(b){
   s.t=0; s.mesh.position.set(b.x,G.water+0.3,b.z);
   G.shake=REDUCED?0:0.5;
   sfx.ignite();
-  toast('BEACON '+ROMAN[b.i]+' KINDLED — THE DUSK RECEDES');
+  
+  const perk = BEACON_PERKS[b.i] || { name: 'BLESSING', desc: 'The Light Grows' };
+  toast('BEACON ' + ROMAN[b.i] + ' · ' + perk.name + ' (' + perk.desc + ')');
+  if(b.i === 0) G.perkSpeed = 1.25;
+  if(b.i === 1) G.perkMagnet = 1.4;
+  if(b.i === 2) CARGO_MAX = 18;
+  if(b.i === 3) G.perkStamina = 1.6;
+  if(b.i === 4) G.perkDusk = 0.7;
+
   pipsDirty=true;
   hint('ignite','The light holds the sun. '+(6-G.litCount)+' beacon'+(6-G.litCount===1?'':'s')+' remain dark.');
   if(G.litCount>=6){
@@ -1839,7 +1874,7 @@ function sim(dt){
   G.time+=dt;
   const D=DIFFS[G.diff];
   if(G.hold>0) G.hold-=dt;
-  else G.day-=dt/D.dur;
+  else G.day-=dt/D.dur*(G.perkDusk||1.0);
   const waterTarget=(1-clamp(G.day,0,1))*11+G.waterOff+Math.sin(G.t*0.1)*0.15;
   G.water=lerp(G.water,waterTarget,1-Math.exp(-0.5*dt));
   // combo decay
@@ -1852,7 +1887,7 @@ function sim(dt){
   const wantBoost=(keys.Space||keys.ShiftLeft||keys.ShiftRight||input.boost)&&G.stamina>1&&thr>0;
   if(wantBoost&&!sim._boosting){sfx.boost();hint('surge','Surge widens your reach — motes are drawn to the skiff.');}
   sim._boosting=wantBoost;
-  const maxSp=wantBoost?40:26;
+  const maxSp=(wantBoost?40:26)*(G.perkSpeed||1.0);
   boatState.speed+=thr*(wantBoost?30:16)*dt;
   boatState.speed*=Math.exp(-0.55*dt);
   boatState.speed=clamp(boatState.speed,-8,maxSp);
@@ -1866,7 +1901,7 @@ function sim(dt){
   for(const b of beacons){if(!b.lit)continue;
     if((b.x-boatState.x)**2+(b.z-boatState.z)**2<45*45){inCalm=true;break;}}
   if(wantBoost) G.stamina=Math.max(0,G.stamina-34*dt);
-  else G.stamina=Math.min(100,G.stamina+(inCalm?24:13)*dt);
+  else G.stamina=Math.min(100,G.stamina+(inCalm?24:13)*dt*(G.perkStamina||1.0));
   // boundary
   const r=Math.hypot(boatState.x,boatState.z);
   if(r>BOUND){
@@ -1893,7 +1928,7 @@ function sim(dt){
     }
   }
   // ---- motes ----
-  const magnet=(wantBoost?14:9)+(inCalm?3:0);
+  const magnet=((wantBoost?14:9)+(inCalm?3:0))*(G.perkMagnet||1.0);
   for(const m of motes){
     if(!m.active) continue;
     const dx=boatState.x-m.x,dz=boatState.z-m.z,d2=dx*dx+dz*dz;
@@ -2409,7 +2444,7 @@ function tick(now){
   cameraUpdate(dt);
   envUpdate();
   if(G.mode==='playing'||G.mode==='launch'||G.mode==='paused') hudUpdate();
-  if(frame%24===0&&renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate=true;
+  if(frame%3===0&&renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate=true;
   composer.render();
 }
 
