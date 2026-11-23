@@ -653,7 +653,7 @@ if(!DIFFS[G.diff]) G.diff='standard';
 if(COARSE && !store.get('qual',null)) G.qual='med';
 
 /* ---------------- audio ---------------- */
-let AC=null, master=null, ambGains=[], audioReady=false;
+let AC=null, master=null, ambGains=[], audioReady=false, windAmbGain=null, seaGain=null;
 function initAudio(){
   if(audioReady) return; audioReady=true;
   try{
@@ -674,8 +674,8 @@ function initAudio(){
       src.connect(f); f.connect(g); g.connect(master);
       src.start(); lfo.start(); ambGains.push(g); return g;
     };
-    mkNoise(320,0.5,0.16,0.07,0.07);   // sea wash
-    mkNoise(950,1.2,0.035,0.045,0.02); // wind
+    seaGain=mkNoise(320,0.5,0.16,0.07,0.07);   // sea wash
+    windAmbGain=mkNoise(950,1.2,0.035,0.045,0.02); // dynamic wind
     // warm drone
     const dg=AC.createGain(); dg.gain.value=0.045; dg.connect(master); ambGains.push(dg);
     [110,164.8,220.5].forEach((f,i)=>{
@@ -714,7 +714,7 @@ function whoosh(){
   const f=AC.createBiquadFilter(); f.type='bandpass'; f.Q.value=1.4;
   f.frequency.setValueAtTime(280,t); f.frequency.exponentialRampToValueAtTime(1500,t+0.32);
   const g=AC.createGain(); g.gain.setValueAtTime(0.22,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.45);
-  src.buffer=b; src.connect(f); f.connect(g); g.connect(master); src.start(t);
+  src.connect(f); f.connect(g); g.connect(master); src.start(t);
 }
 const PENTA=[0,2,4,7,9,12,14,16];
 const sfx={
@@ -723,6 +723,19 @@ const sfx={
   ignite:()=>{bell(196,0.34); setTimeout(()=>bell(294,0.24),140); setTimeout(()=>tone(784,1.2,'sine',0.1),300);},
   deny:()=>tone(160,0.2,'square',0.05),
   thud:()=>{tone(82,0.18,'sine',0.16,-30);},
+  slap:()=>{
+    if(!AC||G.muted) return;
+    const t=AC.currentTime, o=AC.createOscillator(), g=AC.createGain(), f=AC.createBiquadFilter();
+    o.type='triangle'; o.frequency.setValueAtTime(115,t); o.frequency.exponentialRampToValueAtTime(28,t+0.18);
+    f.type='lowpass'; f.frequency.value=240;
+    g.gain.setValueAtTime(0.25,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.2);
+    o.connect(f); f.connect(g); g.connect(master);
+    o.start(t); o.stop(t+0.22);
+  },
+  beaconPulse:()=>{
+    if(!AC||G.muted) return;
+    bell(440,0.15); setTimeout(()=>bell(554.37,0.12),120);
+  },
   boost:()=>whoosh(),
   ui:()=>tone(880,0.07,'triangle',0.06),
   win:()=>{[261.63,329.63,392,493.88,587.33].forEach((f,i)=>setTimeout(()=>tone(f,3.4,'sine',0.14,0,0.6),i*160));},
@@ -751,12 +764,33 @@ const SUN_AZ={x:-0.592,z:-0.806};
 const PAL={};
 const structs=[];
 
-/* wave function — mirrored exactly in the water vertex shader */
+/* unified global wind system — Ghost of Tsushima atmospheric inspiration */
+const WIND = {
+  angle: 0.95,
+  speed: 13.5,
+  gust: 0,
+  vx: -9.5,
+  vz: -9.5
+};
+
+/* wave function — mirrored analytically in water vertex & physics */
 function waveH(x,z,t){
   return 0.28*Math.sin(x*0.055+z*0.038+t*1.1)
        + 0.16*Math.sin(-x*0.082+z*0.065+t*1.4)
        + 0.10*Math.sin(x*0.12-z*0.095+t*1.8)
        + 0.05*Math.sin(z*0.22+x*0.18+t*2.3);
+}
+function waveGrad(x,z,t){
+  const h=waveH(x,z,t);
+  const dx = 0.28*0.055*Math.cos(x*0.055+z*0.038+t*1.1)
+           - 0.16*0.082*Math.cos(-x*0.082+z*0.065+t*1.4)
+           + 0.10*0.12*Math.cos(x*0.12-z*0.095+t*1.8)
+           + 0.05*0.18*Math.cos(z*0.22+x*0.18+t*2.3);
+  const dz = 0.28*0.038*Math.cos(x*0.055+z*0.038+t*1.1)
+           + 0.16*0.065*Math.cos(-x*0.082+z*0.065+t*1.4)
+           - 0.10*0.095*Math.cos(x*0.12-z*0.095+t*1.8)
+           + 0.05*0.22*Math.cos(z*0.22+x*0.18+t*2.3);
+  return {h, dx, dz};
 }
 function sunDir(day){
   const e=lerp(-0.075,0.38,clamp(day,0,1.2));
@@ -924,12 +958,12 @@ function islet(x,z,r,terrace){
 /* ---------------- world layout ---------------- */
 
 const BEACON_PERKS = [
-  { name: 'SWIFT CURRENT', desc: '+25% Sail & Surge Speed' },
-  { name: 'MAGNETIC SWELL', desc: '+40% Sunmote Magnet Reach' },
-  { name: 'DEEP CARGO', desc: 'Hold Capacity Expanded to 18' },
-  { name: 'SOLAR RECOVERY', desc: '+60% Stamina Recharge Rate' },
-  { name: 'DUSK ANCHOR', desc: 'The Sun Falls 30% Slower' },
-  { name: 'ETERNAL DAWN', desc: 'The Sea is Restored' }
+  { name: 'LƯU TỐC', desc: 'Kích hoạt hải lưu xoáy & tăng +25% tốc độ thuyền' },
+  { name: 'TỪ TRIỀU', desc: 'Phát sóng âm từ trường hút tinh hoa mặt trời từ xa' },
+  { name: 'TRẦM KHANG', desc: 'Vùng nước bình yên, mở rộng khoang chứa lên 18 motes' },
+  { name: 'NHẬT THẦN', desc: 'Trụ quang minh đóng băng thời gian trong phạm vi' },
+  { name: 'HOÀNG HÔN', desc: 'Neo giữ ánh tà dương, làm chậm màn đêm -35%' },
+  { name: 'CỰC QUANG', desc: 'Bình minh vĩnh cửu, xua tan màn sương bão' }
 ];
 
 const BEACON_DEFS=[
@@ -1276,6 +1310,7 @@ function buildWater(){
     uDeep:{value:new THREE.Color('#052538')},uShallow:{value:new THREE.Color('#1f8f94')},
     uSkyHi:{value:new THREE.Color()},uSkyLo:{value:new THREE.Color()},
     uFogColor:{value:new THREE.Color()},uFogDensity:{value:0.0016},
+    uWindDir:{value:new THREE.Vector2(-0.707,-0.707)},
     uStructs:{value:[new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4()]},uBound:{value:BOUND}
   };
   const mat=new THREE.ShaderMaterial({uniforms:waterU,
@@ -1306,24 +1341,26 @@ function buildWater(){
     fragmentShader:`
       uniform float uTime,uDay,uSunI,uFogDensity,uBound;
       uniform vec3 uSunDir,uSunColor,uDeep,uShallow,uSkyHi,uSkyLo,uFogColor;
+      uniform vec2 uWindDir;
       uniform vec4 uStructs[4];
       varying vec3 vW; varying vec3 vN; varying float vH;
 
       void main(){
-        vec2 p1 = vW.xz * 1.8 + vec2(uTime * 0.45, uTime * 0.28);
-        vec2 p2 = vW.xz * 3.6 - vec2(uTime * 0.32, uTime * 0.52);
-        vec2 p3 = vW.xz * 0.85 + vec2(-uTime * 0.18, uTime * 0.35);
+        vec2 wDir = normalize(uWindDir);
+        vec2 p1 = vW.xz * 1.8 + wDir * (uTime * 0.52);
+        vec2 p2 = vW.xz * 3.6 - vec2(wDir.y, -wDir.x) * (uTime * 0.42);
+        vec2 p3 = vW.xz * 0.85 + wDir * (uTime * 0.22);
 
         vec3 rippleN = vec3(
           sin(p1.x + p2.y) * 0.12 + cos(p2.x - p1.y) * 0.08 + sin(p3.x*2.0) * 0.06,
           1.0,
           cos(p1.y + p2.x) * 0.12 + sin(p2.y - p1.x) * 0.08 + cos(p3.y*2.0) * 0.06
         );
-        vec3 N = normalize(vN + rippleN * 0.7);
+        vec3 N = normalize(vN + rippleN * 0.75);
         vec3 V = normalize(cameraPosition - vW);
 
         float NdotV = max(dot(N, V), 0.0);
-        float fres = 0.03 + 0.97 * pow(1.0 - NdotV, 4.5);
+        float fres = 0.025 + 0.975 * pow(1.0 - NdotV, 4.6);
 
         float shallow = 0.0, foam = 0.0, shade = 0.0;
         for(int i = 0; i < 4; i++){
@@ -1335,12 +1372,23 @@ function buildWater(){
           shade = max(shade, (1.0 - smoothstep(s.z * 0.6, s.z * 1.4, d)) * s.w);
         }
 
-        float crestFoam = smoothstep(0.32, 0.48, vH) * 0.6;
+        // Multi-scale natural wave crest foam
+        float foamNoise = sin(p1.x * 2.8 + p2.y * 2.2) * cos(p2.x * 2.2 - p3.y * 2.5);
+        float crestFoam = smoothstep(0.26, 0.46, vH + foamNoise * 0.05) * 0.75;
         foam = clamp(foam * 0.85 + crestFoam, 0.0, 1.0);
 
-        vec3 base = mix(uDeep, uShallow, clamp(shallow * 0.85 + vH * 0.45 + 0.18, 0.0, 1.0));
-        float sss = max(dot(-V, uSunDir), 0.0) * max(vH + 0.2, 0.0);
-        base += uShallow * sss * 0.45 * uSunI;
+        // Biome distance gradation: Center shallow turquoise vs open ocean abyss
+        float distCenter = length(vW.xz);
+        vec3 deepBiome = mix(uDeep, vec3(0.02, 0.08, 0.14), smoothstep(120.0, 320.0, distCenter));
+        vec3 shallowBiome = mix(vec3(0.12, 0.72, 0.68), uShallow, smoothstep(50.0, 220.0, distCenter));
+
+        vec3 base = mix(deepBiome, shallowBiome, clamp(shallow * 0.85 + vH * 0.45 + 0.18, 0.0, 1.0));
+        
+        // Translucent Subsurface Scattering (sunlight piercing wave crests)
+        float sssSun = pow(max(dot(-V, uSunDir), 0.0), 2.8);
+        float waveTranslucency = max(vH + 0.3, 0.0);
+        vec3 sssCol = mix(shallowBiome, vec3(0.18, 0.95, 0.8), 0.5);
+        base += sssCol * sssSun * waveTranslucency * 0.55 * uSunI;
 
         vec3 R = reflect(-V, N);
         vec3 skyRef = mix(uSkyLo, uSkyHi, clamp(R.y * 1.5 + 0.1, 0.0, 1.0));
@@ -1358,7 +1406,7 @@ function buildWater(){
         vec3 foamCol = vec3(0.92, 0.96, 0.98) * (0.55 + 0.45 * uDay);
         col = mix(col, foamCol, foam * 0.82);
 
-        col = mix(col, uDeep * 0.35, smoothstep(uBound, uBound + 120.0, length(vW.xz)));
+        col = mix(col, deepBiome * 0.35, smoothstep(uBound, uBound + 120.0, distCenter));
 
         float fd = length(cameraPosition - vW);
         float ff = 1.0 - exp(-uFogDensity * uFogDensity * fd * fd);
@@ -1568,12 +1616,13 @@ function spawnBurst(x,y,z,n,spread,up,col,size=2.4,life=0.8,vel=null){
 }
 function updateBurst(dt){
   const D=burstData;
+  const wx=WIND.vx*0.18, wz=WIND.vz*0.18;
   for(let i=0;i<D.n;i++){
     if(D.life[i]<=0) continue;
     D.life[i]-=dt/D.max[i];
-    D.pos[i*3]+=D.vel[i*3]*dt;
+    D.pos[i*3]+=(D.vel[i*3]+wx)*dt;
     D.pos[i*3+1]+=D.vel[i*3+1]*dt;
-    D.pos[i*3+2]+=D.vel[i*3+2]*dt;
+    D.pos[i*3+2]+=(D.vel[i*3+2]+wz)*dt;
     D.vel[i*3+1]-=4.5*dt;
   }
   burst.geometry.attributes.position.needsUpdate=true;
@@ -1584,6 +1633,7 @@ function updateBurst(dt){
 let litBeaconsCache=[];
 function updateEmbers(dt){
   const D=emberData, lit=litBeaconsCache;
+  const wx=WIND.vx*0.15, wz=WIND.vz*0.15;
   for(let i=0;i<D.n;i++){
     if(lit.length===0){D.life[i]=0;continue;}
     D.life[i]-=dt*0.5;
@@ -1592,9 +1642,9 @@ function updateEmbers(dt){
       D.pos[i*3]=b.x+rand(-1.4,1.4); D.pos[i*3+1]=b.bowlY+rand(0,1); D.pos[i*3+2]=b.z+rand(-1.4,1.4);
       D.life[i]=rand(0.6,1);
     }else{
-      D.pos[i*3]+=Math.sin(G.t*2+D.seed[i]*40)*dt*1.2;
+      D.pos[i*3]+=Math.sin(G.t*2+D.seed[i]*40)*dt*1.2 + wx*dt;
       D.pos[i*3+1]+=dt*(3+D.seed[i]*4);
-      D.pos[i*3+2]+=Math.cos(G.t*1.7+D.seed[i]*30)*dt*1.2;
+      D.pos[i*3+2]+=Math.cos(G.t*1.7+D.seed[i]*30)*dt*1.2 + wz*dt;
     }
   }
   embers.geometry.attributes.position.needsUpdate=true;
@@ -1696,14 +1746,30 @@ function buildShafts(){
 /* ---------------- environment per-frame ---------------- */
 let ENV;
 function envUpdate(){
-  // Update 4 nearest structures for water shader (spatial optimization)
+  // Update 4 nearest structures for water shader (Zero-GC spatial selection)
   if(waterU && structs.length > 0){
     const bx=boatState.x, bz=boatState.z;
-    const sorted = structs.slice().sort((a,b)=>((a.x-bx)**2+(a.y-bz)**2)-((b.x-bx)**2+(b.y-bz)**2));
-    for(let i=0;i<4;i++){
-      if(sorted[i]) waterU.uStructs.value[i].copy(sorted[i]);
+    let d0=1e9, d1=1e9, d2=1e9, d3=1e9;
+    let i0=-1, i1=-1, i2=-1, i3=-1;
+    for(let i=0; i<structs.length; i++){
+      const s = structs[i];
+      const d = (s.x-bx)*(s.x-bx) + (s.y-bz)*(s.y-bz);
+      if(d < d0){
+        d3=d2; i3=i2; d2=d1; i2=i1; d1=d0; i1=i0; d0=d; i0=i;
+      }else if(d < d1){
+        d3=d2; i3=i2; d2=d1; i2=i1; d1=d; i1=i;
+      }else if(d < d2){
+        d3=d2; i3=i2; d2=d; i2=i;
+      }else if(d < d3){
+        d3=d; i3=i;
+      }
+    }
+    const idxs = [i0, i1, i2, i3];
+    for(let i=0; i<4; i++){
+      if(idxs[i] >= 0) waterU.uStructs.value[i].copy(structs[idxs[i]]);
       else waterU.uStructs.value[i].set(9999,9999,0,0);
     }
+    if(waterU.uWindDir) waterU.uWindDir.value.set(WIND.vx, WIND.vz).normalize();
   }
   const day=G.day, d=clamp(day,0,1), dusk=1-d;
   const sd=sunDir(day);
@@ -1884,10 +1950,25 @@ function sim(dt){
   let turn=(keys.KeyA||keys.ArrowLeft?1:0)-(keys.KeyD||keys.ArrowRight?1:0);
   if(Math.abs(input.jy)>0.12) thr=-input.jy;
   if(Math.abs(input.jx)>0.12) turn=-input.jx;
+  // Unified Global Wind progression
+  WIND.angle += Math.sin(G.t * 0.025) * 0.04 * dt;
+  WIND.gust = Math.sin(G.t * 0.85) * 0.35 + Math.sin(G.t * 2.1) * 0.18;
+  const curWindSp = WIND.speed * (1.0 + Math.max(-0.4, WIND.gust));
+  WIND.vx = Math.sin(WIND.angle) * curWindSp;
+  WIND.vz = Math.cos(WIND.angle) * curWindSp;
+
+  // Sailing aerodynamic advantage / resistance
+  const fxCurr=Math.sin(boatState.h), fzCurr=Math.cos(boatState.h);
+  const appVx = WIND.vx - fxCurr * boatState.speed;
+  const appVz = WIND.vz - fzCurr * boatState.speed;
+  const appWindAngle = Math.atan2(appVx, appVz);
+  const relWind = appWindAngle - boatState.h;
+  const windSailingLift = Math.cos(relWind) < 0.2 ? Math.max(0, -Math.cos(relWind)) * 0.16 : -0.06;
+
   const wantBoost=(keys.Space||keys.ShiftLeft||keys.ShiftRight||input.boost)&&G.stamina>1&&thr>0;
   if(wantBoost&&!sim._boosting){sfx.boost();hint('surge','Surge widens your reach — motes are drawn to the skiff.');}
   sim._boosting=wantBoost;
-  const maxSp=(wantBoost?40:26)*(G.perkSpeed||1.0);
+  const maxSp=(wantBoost?40:26)*(G.perkSpeed||1.0)*(1.0 + windSailingLift);
   boatState.speed+=thr*(wantBoost?30:16)*dt;
   boatState.speed*=Math.exp(-0.55*dt);
   boatState.speed=clamp(boatState.speed,-8,maxSp);
@@ -1896,12 +1977,43 @@ function sim(dt){
   const fx=Math.sin(boatState.h),fz=Math.cos(boatState.h);
   boatState.x+=fx*boatState.speed*dt;
   boatState.z+=fz*boatState.speed*dt;
-  // stamina
+
+  // Beacon 0 (Swift Current) Physical current push
+  if(beacons[0] && beacons[0].lit){
+    const d0x = boatState.x - beacons[0].x, d0z = boatState.z - beacons[0].z;
+    const dist0 = Math.hypot(d0x, d0z);
+    if(dist0 < 80 && dist0 > 5){
+      const curX = -d0z / dist0, curZ = d0x / dist0;
+      const currentForce = (1.0 - dist0 / 80) * 8.5;
+      boatState.x += curX * currentForce * dt;
+      boatState.z += curZ * currentForce * dt;
+      if(frame % 5 === 0) spawnBurst(boatState.x - curX*2, G.water+0.3, boatState.z - curZ*2, 2, 2, 1, PAL.seafoam, 1.4, 0.4);
+    }
+  }
+
+  // Beacon 2 (Deep Haven) Super Calm Sanctuary & Beacon 3 (Solar Aegis)
   let inCalm=false;
   for(const b of beacons){if(!b.lit)continue;
-    if((b.x-boatState.x)**2+(b.z-boatState.z)**2<45*45){inCalm=true;break;}}
+    if((b.x-boatState.x)**2+(b.z-boatState.z)**2<48*48){inCalm=true;break;}}
+
+  if(beacons[2] && beacons[2].lit){
+    const dist2 = Math.hypot(boatState.x - beacons[2].x, boatState.z - beacons[2].z);
+    if(dist2 < 65) G.stamina = Math.min(100, G.stamina + 45 * dt);
+  }
+  if(beacons[3] && beacons[3].lit){
+    const dist3 = Math.hypot(boatState.x - beacons[3].x, boatState.z - beacons[3].z);
+    if(dist3 < 68) G.day = Math.min(1.0, G.day + dt * 0.02);
+  }
+
+  // Dynamic Audio Wind Modulation
+  if(windAmbGain && AC && !G.muted){
+    const spNorm = Math.min(1, Math.abs(boatState.speed) / 36);
+    const targetWindGain = 0.025 + spNorm * 0.065 + Math.max(0, WIND.gust) * 0.035;
+    windAmbGain.gain.setTargetAtTime(targetWindGain, AC.currentTime, 0.15);
+  }
+
   if(wantBoost) G.stamina=Math.max(0,G.stamina-34*dt);
-  else G.stamina=Math.min(100,G.stamina+(inCalm?24:13)*dt*(G.perkStamina||1.0));
+  else G.stamina=Math.min(100,G.stamina+(inCalm?26:13)*dt*(G.perkStamina||1.0));
   // boundary
   const r=Math.hypot(boatState.x,boatState.z);
   if(r>BOUND){
@@ -2021,33 +2133,82 @@ function updateWake(dt,fx,fz){
   }
 }
 
-/* ---------------- boat visual & camera ---------------- */
+/* ---------------- boat visual & camera (Hydrodynamic Simulation) ---------------- */
 function boatVisual(dt){
-  const fx=Math.sin(boatState.h),fz=Math.cos(boatState.h);
-  const y=G.water+waveH(boatState.x,boatState.z,G.t)+0.32;
-  boatState.bobY=y;
-  boat.position.set(boatState.x,y,boatState.z);
-  const ahead=waveH(boatState.x+fx*2,boatState.z+fz*2,G.t);
-  const behind=waveH(boatState.x-fx*2,boatState.z-fz*2,G.t);
-  const side=waveH(boatState.x-fz*1.5,boatState.z+fx*1.5,G.t);
-  const side2=waveH(boatState.x+fz*1.5,boatState.z-fx*1.5,G.t);
-  let turn=0;
-  if(G.mode==='playing'){
-    turn=(keys.KeyA||keys.ArrowLeft?1:0)-(keys.KeyD||keys.ArrowRight?1:0)-input.jx;
+  const fx=Math.sin(boatState.h), fz=Math.cos(boatState.h);
+  
+  // Wave height sampling at 5 hydrodynamic hull points
+  const hCenter = waveH(boatState.x, boatState.z, G.t);
+  const hBow = waveH(boatState.x + fx*3.2, boatState.z + fz*3.2, G.t);
+  const hStern = waveH(boatState.x - fx*2.5, boatState.z - fz*2.5, G.t);
+  const hPort = waveH(boatState.x - fz*1.5, boatState.z + fx*1.5, G.t);
+  const hStar = waveH(boatState.x + fz*1.5, boatState.z - fx*1.5, G.t);
+
+  // Buoyant Heave (Spring-mass-damper vertical displacement)
+  const targetY = G.water + (hCenter*0.4 + (hBow + hStern)*0.2 + (hPort + hStar)*0.1) + 0.34;
+  if(boatState.curY === undefined) boatState.curY = targetY;
+  if(boatState.vy === undefined) boatState.vy = 0;
+  
+  const buoyantForce = (targetY - boatState.curY) * 36.0;
+  const dampForce = -boatState.vy * 8.5;
+  boatState.vy += (buoyantForce + dampForce) * dt;
+  boatState.curY += boatState.vy * dt;
+  boatState.bobY = boatState.curY;
+  boat.position.set(boatState.x, boatState.curY, boatState.z);
+
+  // Hydrodynamic Pitch & Roll with longitudinal/transverse slopes
+  const pitchSlope = (hBow - hStern) / 5.7;
+  const rollSlope = (hPort - hStar) / 3.0;
+
+  let turn = 0;
+  if(G.mode === 'playing'){
+    turn = (keys.KeyA||keys.ArrowLeft?1:0) - (keys.KeyD||keys.ArrowRight?1:0) - input.jx;
   }
-  const bank=-turn*0.3*Math.min(1,Math.abs(boatState.speed)/20);
-  const targetPitch=-Math.atan2(ahead-behind,4)*0.8;
-  const targetRoll=Math.atan2(side-side2,3)*0.7+bank;
-  boatState.pitch=lerp(boatState.pitch,targetPitch,1-Math.exp(-6*dt));
-  boatState.roll=lerp(boatState.roll,targetRoll,1-Math.exp(-6*dt));
-  boat.rotation.set(boatState.pitch,boatState.h,boatState.roll,'YXZ');
-  sail.rotation.y=Math.PI/2+0.12+boatState.roll*0.4;
-  sail.scale.x=1+Math.sin(G.t*3.1)*0.03;
-  pennant.rotation.y=Math.sin(G.t*4)*0.3-boatState.speed*0.01;
-  pennant.scale.x=0.8+Math.min(1,Math.abs(boatState.speed)/30)*0.5+Math.sin(G.t*7)*0.08;
-  blobShadow.position.set(boatState.x,G.water+waveH(boatState.x,boatState.z,G.t)+0.06,boatState.z);
-  blobShadow.rotation.z=-boatState.h;
-  blobShadow.material.opacity=0.3*clamp(G.day,0.15,1);
+  const turnBank = -turn * 0.36 * Math.min(1, Math.abs(boatState.speed)/22);
+  const speedLift = Math.max(0, boatState.speed / 42.0) * 0.09;
+
+  const targetPitch = -Math.atan(pitchSlope) * 1.15 + speedLift;
+  const targetRoll = Math.atan(rollSlope) * 0.95 + turnBank;
+
+  // Angular inertia with rotational damping
+  if(boatState.pitchVel === undefined) boatState.pitchVel = 0;
+  if(boatState.rollVel === undefined) boatState.rollVel = 0;
+  boatState.pitchVel += ((targetPitch - boatState.pitch) * 48.0 - boatState.pitchVel * 10.5) * dt;
+  boatState.pitch += boatState.pitchVel * dt;
+  boatState.rollVel += ((targetRoll - boatState.roll) * 42.0 - boatState.rollVel * 9.5) * dt;
+  boatState.roll += boatState.rollVel * dt;
+
+  boat.rotation.set(boatState.pitch, boatState.h, boatState.roll, 'YXZ');
+
+  // Wave crest slamming impact & realistic bow spray
+  const sp = Math.abs(boatState.speed);
+  if(sp > 12 && boatState.vy < -1.35 && G.t - (boatState._lastSlap || 0) > 0.42){
+    boatState._lastSlap = G.t;
+    if(sfx.slap) sfx.slap();
+    G.shake = Math.max(G.shake, 0.05);
+    spawnBurst(boatState.x + fx*2.8 - fz*1.1, G.water + hBow + 0.3, boatState.z + fz*2.8 + fx*1.1, 4, 3, 3, PAL.seafoam, 1.6, 0.4);
+    spawnBurst(boatState.x + fx*2.8 + fz*1.1, G.water + hBow + 0.3, boatState.z + fz*2.8 - fx*1.1, 4, 3, 3, PAL.seafoam, 1.6, 0.4);
+  }
+
+  // Sail & Pennant Aerodynamic interaction with Unified Wind
+  const appVx = WIND.vx - fx * boatState.speed;
+  const appVz = WIND.vz - fz * boatState.speed;
+  const appSpeed = Math.hypot(appVx, appVz);
+  const appAngle = Math.atan2(appVx, appVz);
+  const relWind = appAngle - boatState.h;
+
+  const sailTargetRot = Math.PI/2 + clamp(Math.sin(relWind) * 0.65, -0.65, 0.65) + boatState.roll * 0.25;
+  sail.rotation.y = lerp(sail.rotation.y, sailTargetRot, 1 - Math.exp(-8 * dt));
+  const windFill = Math.max(0.2, Math.abs(Math.sin(relWind)));
+  sail.scale.x = 0.96 + windFill * 0.16 + Math.sin(G.t * (6.0 + appSpeed * 0.2)) * 0.04 * windFill;
+
+  pennant.rotation.y = lerp(pennant.rotation.y, appAngle - boatState.h + Math.PI, 1 - Math.exp(-12 * dt));
+  pennant.scale.x = 0.85 + Math.min(1.2, appSpeed / 22) + Math.sin(G.t * (8.0 + appSpeed * 0.4)) * 0.07;
+
+  // Blob shadow adheres smoothly to local water height
+  blobShadow.position.set(boatState.x, G.water + hCenter + 0.06, boatState.z);
+  blobShadow.rotation.z = -boatState.h;
+  blobShadow.material.opacity = 0.3 * clamp(G.day, 0.15, 1);
 }
 function chaseDesired(out){
   const cy=boatState.h+Math.PI+orbit.yaw;
@@ -2239,7 +2400,11 @@ function resetRun(toTitle){
   G.stamina=100; G.time=0; G.litCount=0; G.shake=0; G.cineT=0;
   G.spawnT=0; G.dangerToasted=false; G.hints={}; G.lastTransfer=null;
   sim._boosting=false;
-  boatState.x=0; boatState.z=70; boatState.h=Math.PI; boatState.speed=0; boatState.roll=0; boatState.pitch=0;
+  G.perkSpeed=1.0; G.perkMagnet=1.0; CARGO_MAX=10; G.perkStamina=1.0; G.perkDusk=1.0;
+  litBeaconsCache.length=0;
+  boatState.x=0; boatState.z=70; boatState.h=Math.PI; boatState.speed=0;
+  boatState.roll=0; boatState.pitch=0; boatState.curY=undefined; boatState.vy=0;
+  boatState.pitchVel=0; boatState.rollVel=0;
   orbit.yaw=0; orbit.pitch=0.34; orbit.dist=17;
   wake.userData.trail.length=0;
   for(const b of beacons){
