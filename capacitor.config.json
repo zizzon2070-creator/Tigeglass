@@ -1,0 +1,15 @@
+﻿{
+  "appId": "com.tigeglass.game",
+  "appName": "TIGEGLASS",
+  "webDir": "www",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#0a2733",
+    "overScrollMode": "never",
+    "minWebViewVersion": 60
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}
