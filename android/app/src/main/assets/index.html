@@ -549,6 +549,7 @@ body.touch #minimap{width:120px;height:120px}
         <button class="seg-btn" data-q="low"><b>LOW</b></button>
         <button class="seg-btn" data-q="med"><b>MED</b></button>
         <button class="seg-btn" data-q="high"><b>HIGH</b></button>
+        <button class="seg-btn" data-q="ultra"><b>ULTRA ✨</b></button>
       </div>
     </div>
     <div class="legend">
@@ -572,6 +573,7 @@ body.touch #minimap{width:120px;height:120px}
       <button class="seg-btn" data-q="low"><b>LOW</b></button>
       <button class="seg-btn" data-q="med"><b>MED</b></button>
       <button class="seg-btn" data-q="high"><b>HIGH</b></button>
+      <button class="seg-btn" data-q="ultra"><b>ULTRA ✨</b></button>
     </div>
     <div class="sliderRow"><label>VOLUME</label><input type="range" id="volSlider" min="0" max="100" value="80"></div>
     <div class="legend pauseLegend">
@@ -773,24 +775,73 @@ const WIND = {
   vz: -9.5
 };
 
-/* wave function — mirrored analytically in water vertex & physics */
-function waveH(x,z,t){
-  return 0.28*Math.sin(x*0.055+z*0.038+t*1.1)
-       + 0.16*Math.sin(-x*0.082+z*0.065+t*1.4)
-       + 0.10*Math.sin(x*0.12-z*0.095+t*1.8)
-       + 0.05*Math.sin(z*0.22+x*0.18+t*2.3);
+/* --- AAA Trochoidal Gerstner Ocean Wave Simulation --- */
+const GERSTNER_WAVES = [
+  // dirX, dirZ, wavelength, amplitude, steepness
+  { dx: -0.7071, dz: -0.7071, L: 82.0, A: 1.40, S: 0.70 }, // Primary deep ocean swell
+  { dx: -0.381,  dz:  0.924,  L: 45.0, A: 0.85, S: 0.65 }, // Secondary cross-sea
+  { dx:  0.859,  dz: -0.512,  L: 24.0, A: 0.50, S: 0.60 }, // Wind sea
+  { dx: -0.921,  dz:  0.389,  L: 13.0, A: 0.32, S: 0.55 }, // High frequency chop
+  { dx:  0.419,  dz:  0.908,  L:  7.0, A: 0.16, S: 0.50 }  // Capillary breaker
+];
+
+function getWaveMultiplier(){
+  if(typeof G === 'undefined' || !G.qual) return 1.0;
+  return G.qual === 'ultra' ? 1.45 : (G.qual === 'high' ? 1.15 : 0.90);
 }
-function waveGrad(x,z,t){
-  const h=waveH(x,z,t);
-  const dx = 0.28*0.055*Math.cos(x*0.055+z*0.038+t*1.1)
-           - 0.16*0.082*Math.cos(-x*0.082+z*0.065+t*1.4)
-           + 0.10*0.12*Math.cos(x*0.12-z*0.095+t*1.8)
-           + 0.05*0.18*Math.cos(z*0.22+x*0.18+t*2.3);
-  const dz = 0.28*0.038*Math.cos(x*0.055+z*0.038+t*1.1)
-           + 0.16*0.065*Math.cos(-x*0.082+z*0.065+t*1.4)
-           - 0.10*0.095*Math.cos(x*0.12-z*0.095+t*1.8)
-           + 0.05*0.22*Math.cos(z*0.22+x*0.18+t*2.3);
-  return {h, dx, dz};
+
+function waveH(x, z, t, mult){
+  const waveMult = mult !== undefined ? mult : getWaveMultiplier();
+  let dy = 0;
+  const g = 9.81;
+  for(let i = 0; i < 5; i++){
+    const w = GERSTNER_WAVES[i];
+    const k = 6.2831853 / w.L;
+    const omega = Math.sqrt(g * k);
+    const A = w.A * waveMult;
+    const phi = k * (w.dx * x + w.dz * z) - omega * t;
+    dy += A * Math.cos(phi);
+  }
+  return dy;
+}
+
+function waveGrad(x, z, t, mult){
+  const waveMult = mult !== undefined ? mult : getWaveMultiplier();
+  let dx_disp = 0, dz_disp = 0, dy = 0;
+  let nx = 0, nz = 0, ny = 1;
+  let Jx = 1, Jz = 1, Jxz = 0;
+  const g = 9.81;
+  for(let i = 0; i < 5; i++){
+    const w = GERSTNER_WAVES[i];
+    const k = 6.2831853 / w.L;
+    const omega = Math.sqrt(g * k);
+    const A = w.A * waveMult;
+    const Q = w.S / (k * A * 5.0);
+    const phi = k * (w.dx * x + w.dz * z) - omega * t;
+    const s = Math.sin(phi);
+    const c = Math.cos(phi);
+    dx_disp -= Q * A * w.dx * s;
+    dz_disp -= Q * A * w.dz * s;
+    dy += A * c;
+    nx -= w.dx * k * A * s;
+    nz -= w.dz * k * A * s;
+    ny -= Q * k * A * c;
+    Jx -= Q * k * A * w.dx * w.dx * c;
+    Jz -= Q * k * A * w.dz * w.dz * c;
+    Jxz -= Q * k * A * w.dx * w.dz * c;
+  }
+  const nl = Math.hypot(nx, ny, nz) || 1;
+  const jacob = Jx * Jz - Jxz * Jxz;
+  return {
+    h: dy,
+    dx: dx_disp,
+    dz: dz_disp,
+    nx: nx / nl,
+    ny: ny / nl,
+    nz: nz / nl,
+    jacobian: jacob,
+    crestFoam: Math.max(0, (0.68 - jacob) * 2.5)
+  };
 }
 function sunDir(day){
   const e=lerp(-0.075,0.38,clamp(day,0,1.2));
@@ -874,14 +925,16 @@ async function boot(){
     bloomPass=new UnrealBloomPass(new THREE.Vector2(Math.floor(innerWidth*0.5),Math.floor(innerHeight*0.5)),0.38,0.45,0.88);
     composer.addPass(bloomPass);
     gradePass=new ShaderPass({
-      uniforms:{tDiffuse:{value:null},uTime:{value:0},uRes:{value:new THREE.Vector2(1,1)},uCA:{value:0.0012},uDanger:{value:0}},
+      uniforms:{tDiffuse:{value:null},uTime:{value:0},uRes:{value:new THREE.Vector2(1,1)},uCA:{value:0.0012},uDanger:{value:0},uSplash:{value:0}},
       vertexShader:`varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
       fragmentShader:`
-        uniform sampler2D tDiffuse; uniform float uTime,uCA,uDanger; uniform vec2 uRes; varying vec2 vUv;
+        uniform sampler2D tDiffuse; uniform float uTime,uCA,uDanger,uSplash; uniform vec2 uRes; varying vec2 vUv;
         float h21(vec2 p){p=fract(p*vec2(123.34,456.21));p+=dot(p,p+45.32);return fract(p.x*p.y);}
         void main(){
           vec2 off=(vUv-0.5)*uCA;
-          vec3 col=vec3(texture2D(tDiffuse,vUv+off).r,texture2D(tDiffuse,vUv).g,texture2D(tDiffuse,vUv-off).b);
+          // Water lens droplets refraction when plowing into heavy waves
+          vec2 splashOff = vec2(sin(vUv.y * 32.0 + uTime * 4.0), cos(vUv.x * 32.0 - uTime * 3.0)) * (0.008 * uSplash);
+          vec3 col=vec3(texture2D(tDiffuse,vUv+off+splashOff).r,texture2D(tDiffuse,vUv+splashOff).g,texture2D(tDiffuse,vUv-off+splashOff).b);
           float vig=smoothstep(1.3,0.42,length(vUv-0.5)*1.55);
           col*=mix(0.74,1.0,vig);
           col+=vec3(0.05,0.006,0.0)*(1.0-vig)*uDanger;
@@ -1306,62 +1359,167 @@ function buildSky(){
 function buildWater(){
   waterU={
     uTime:{value:0},uDay:{value:1},uSunI:{value:1},
+    uWaveMult:{value:1.0},
     uSunDir:{value:new THREE.Vector3(0,1,0)},uSunColor:{value:new THREE.Color()},
-    uDeep:{value:new THREE.Color('#052538')},uShallow:{value:new THREE.Color('#1f8f94')},
+    uDeep:{value:new THREE.Color('#031221')},uShallow:{value:new THREE.Color('#108e9c')},
     uSkyHi:{value:new THREE.Color()},uSkyLo:{value:new THREE.Color()},
     uFogColor:{value:new THREE.Color()},uFogDensity:{value:0.0016},
-    uWindDir:{value:new THREE.Vector2(-0.707,-0.707)},
+    uWindDir:{value:new THREE.Vector2(-0.7071,-0.7071)},
     uStructs:{value:[new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4(),new THREE.Vector4()]},uBound:{value:BOUND}
   };
   const mat=new THREE.ShaderMaterial({uniforms:waterU,
     vertexShader:`
-      uniform float uTime;
-      varying vec3 vW; varying vec3 vN; varying float vH;
+      uniform float uTime, uWaveMult;
+      varying vec3 vW; varying vec3 vN; varying float vH; varying float vCrest;
       void main(){
-        vec3 p=position;
-        vec4 w=modelMatrix*vec4(p,1.);
-        float x=w.x, z=w.z, t=uTime;
-        float h = 0.28*sin(x*0.055 + z*0.038 + t*1.1)
-                + 0.16*sin(-x*0.082 + z*0.065 + t*1.4)
-                + 0.10*sin(x*0.12 - z*0.095 + t*1.8)
-                + 0.05*sin(z*0.22 + x*0.18 + t*2.3);
-        float dx = 0.28*0.055*cos(x*0.055 + z*0.038 + t*1.1)
-                 - 0.16*0.082*cos(-x*0.082 + z*0.065 + t*1.4)
-                 + 0.10*0.12*cos(x*0.12 - z*0.095 + t*1.8)
-                 + 0.05*0.18*cos(z*0.22 + x*0.18 + t*2.3);
-        float dz = 0.28*0.038*cos(x*0.055 + z*0.038 + t*1.1)
-                 + 0.16*0.065*cos(-x*0.082 + z*0.065 + t*1.4)
-                 - 0.10*0.095*cos(x*0.12 - z*0.095 + t*1.8)
-                 + 0.05*0.22*cos(z*0.22 + x*0.18 + t*2.3);
-        w.y += h; vH = h;
-        vN = normalize(vec3(-dx, 1.0, -dz));
+        vec3 p = position;
+        // Non-linear focal grid: sub-meter resolution (0.7m) near the boat, smooth span to horizon
+        vec2 localUV = p.xy / 800.0;
+        float r = length(localUV);
+        if(r > 0.0001){
+          p.xy = (localUV / r) * pow(r, 1.55) * 800.0;
+        }
+
+        vec4 w = modelMatrix * vec4(p, 1.0);
+        float x = w.x, z = w.z, t = uTime;
+
+        // 5 Gerstner Waves
+        vec3 dP = vec3(0.0);
+        vec3 norm = vec3(0.0, 1.0, 0.0);
+        float Jx = 1.0, Jz = 1.0, Jxz = 0.0;
+
+        // Wave 1 - Primary Ocean Swell (L=82m, A=1.40m)
+        {
+          vec2 d = vec2(-0.7071, -0.7071);
+          float k = 0.07662;
+          float wFreq = 0.867;
+          float A = 1.40 * uWaveMult;
+          float Q = 0.70 / (k * A * 5.0);
+          float phi = k * dot(d, vec2(x, z)) - wFreq * t;
+          float s = sin(phi), c = cos(phi);
+          dP.x -= Q * A * d.x * s;
+          dP.z -= Q * A * d.y * s;
+          dP.y += A * c;
+          norm.x -= d.x * k * A * s;
+          norm.z -= d.y * k * A * s;
+          norm.y -= Q * k * A * c;
+          Jx -= Q * k * A * d.x * d.x * c;
+          Jz -= Q * k * A * d.y * d.y * c;
+          Jxz -= Q * k * A * d.x * d.y * c;
+        }
+        // Wave 2 - Cross-Sea Swell (L=45m, A=0.85m)
+        {
+          vec2 d = vec2(-0.381, 0.924);
+          float k = 0.1396;
+          float wFreq = 1.170;
+          float A = 0.85 * uWaveMult;
+          float Q = 0.65 / (k * A * 5.0);
+          float phi = k * dot(d, vec2(x, z)) - wFreq * t;
+          float s = sin(phi), c = cos(phi);
+          dP.x -= Q * A * d.x * s;
+          dP.z -= Q * A * d.y * s;
+          dP.y += A * c;
+          norm.x -= d.x * k * A * s;
+          norm.z -= d.y * k * A * s;
+          norm.y -= Q * k * A * c;
+          Jx -= Q * k * A * d.x * d.x * c;
+          Jz -= Q * k * A * d.y * d.y * c;
+          Jxz -= Q * k * A * d.x * d.y * c;
+        }
+        // Wave 3 - Wind Sea (L=24m, A=0.50m)
+        {
+          vec2 d = vec2(0.859, -0.512);
+          float k = 0.2618;
+          float wFreq = 1.602;
+          float A = 0.50 * uWaveMult;
+          float Q = 0.60 / (k * A * 5.0);
+          float phi = k * dot(d, vec2(x, z)) - wFreq * t;
+          float s = sin(phi), c = cos(phi);
+          dP.x -= Q * A * d.x * s;
+          dP.z -= Q * A * d.y * s;
+          dP.y += A * c;
+          norm.x -= d.x * k * A * s;
+          norm.z -= d.y * k * A * s;
+          norm.y -= Q * k * A * c;
+          Jx -= Q * k * A * d.x * d.x * c;
+          Jz -= Q * k * A * d.y * d.y * c;
+          Jxz -= Q * k * A * d.x * d.y * c;
+        }
+        // Wave 4 - Steep Chop (L=13m, A=0.32m)
+        {
+          vec2 d = vec2(-0.921, 0.389);
+          float k = 0.4833;
+          float wFreq = 2.177;
+          float A = 0.32 * uWaveMult;
+          float Q = 0.55 / (k * A * 5.0);
+          float phi = k * dot(d, vec2(x, z)) - wFreq * t;
+          float s = sin(phi), c = cos(phi);
+          dP.x -= Q * A * d.x * s;
+          dP.z -= Q * A * d.y * s;
+          dP.y += A * c;
+          norm.x -= d.x * k * A * s;
+          norm.z -= d.y * k * A * s;
+          norm.y -= Q * k * A * c;
+          Jx -= Q * k * A * d.x * d.x * c;
+          Jz -= Q * k * A * d.y * d.y * c;
+          Jxz -= Q * k * A * d.x * d.y * c;
+        }
+        // Wave 5 - Breaking Ridge (L=7m, A=0.16m)
+        {
+          vec2 d = vec2(0.419, 0.908);
+          float k = 0.8976;
+          float wFreq = 2.967;
+          float A = 0.16 * uWaveMult;
+          float Q = 0.50 / (k * A * 5.0);
+          float phi = k * dot(d, vec2(x, z)) - wFreq * t;
+          float s = sin(phi), c = cos(phi);
+          dP.x -= Q * A * d.x * s;
+          dP.z -= Q * A * d.y * s;
+          dP.y += A * c;
+          norm.x -= d.x * k * A * s;
+          norm.z -= d.y * k * A * s;
+          norm.y -= Q * k * A * c;
+          Jx -= Q * k * A * d.x * d.x * c;
+          Jz -= Q * k * A * d.y * d.y * c;
+          Jxz -= Q * k * A * d.x * d.y * c;
+        }
+
+        w.xyz += dP;
+        vH = dP.y;
+        vN = normalize(norm);
         vW = w.xyz;
+        float jacobian = Jx * Jz - Jxz * Jxz;
+        vCrest = clamp((0.68 - jacobian) * 2.5, 0.0, 1.0);
+
         gl_Position = projectionMatrix * viewMatrix * w;
       }`,
     fragmentShader:`
-      uniform float uTime,uDay,uSunI,uFogDensity,uBound;
-      uniform vec3 uSunDir,uSunColor,uDeep,uShallow,uSkyHi,uSkyLo,uFogColor;
+      uniform float uTime, uDay, uSunI, uFogDensity, uBound;
+      uniform vec3 uSunDir, uSunColor, uDeep, uShallow, uSkyHi, uSkyLo, uFogColor;
       uniform vec2 uWindDir;
       uniform vec4 uStructs[4];
-      varying vec3 vW; varying vec3 vN; varying float vH;
+      varying vec3 vW; varying vec3 vN; varying float vH; varying float vCrest;
 
       void main(){
         vec2 wDir = normalize(uWindDir);
-        vec2 p1 = vW.xz * 1.8 + wDir * (uTime * 0.52);
-        vec2 p2 = vW.xz * 3.6 - vec2(wDir.y, -wDir.x) * (uTime * 0.42);
-        vec2 p3 = vW.xz * 0.85 + wDir * (uTime * 0.22);
+        // High-frequency dual-layer liquid surface ripples
+        vec2 p1 = vW.xz * 1.6 + wDir * (uTime * 0.48);
+        vec2 p2 = vW.xz * 3.4 - vec2(-wDir.y, wDir.x) * (uTime * 0.36);
+        vec2 p3 = vW.xz * 0.75 + wDir * (uTime * 0.20);
 
-        vec3 rippleN = vec3(
-          sin(p1.x + p2.y) * 0.12 + cos(p2.x - p1.y) * 0.08 + sin(p3.x*2.0) * 0.06,
+        vec3 microN = vec3(
+          sin(p1.x * 2.0 + p2.y) * 0.08 + cos(p2.x - p1.y * 2.0) * 0.05 + sin(p3.x * 3.0) * 0.04,
           1.0,
-          cos(p1.y + p2.x) * 0.12 + sin(p2.y - p1.x) * 0.08 + cos(p3.y*2.0) * 0.06
+          cos(p1.y * 2.0 + p2.x) * 0.08 + sin(p2.y - p1.x * 2.0) * 0.05 + cos(p3.y * 3.0) * 0.04
         );
-        vec3 N = normalize(vN + rippleN * 0.75);
+        vec3 N = normalize(vN + microN * 0.55);
         vec3 V = normalize(cameraPosition - vW);
 
+        // Exact physical Schlick Fresnel
         float NdotV = max(dot(N, V), 0.0);
-        float fres = 0.025 + 0.975 * pow(1.0 - NdotV, 4.6);
+        float fres = 0.022 + 0.978 * pow(1.0 - NdotV, 5.0);
 
+        // Structures proximity (reefs, sunken sundial)
         float shallow = 0.0, foam = 0.0, shade = 0.0;
         for(int i = 0; i < 4; i++){
           vec4 s = uStructs[i];
@@ -1372,42 +1530,47 @@ function buildWater(){
           shade = max(shade, (1.0 - smoothstep(s.z * 0.6, s.z * 1.4, d)) * s.w);
         }
 
-        // Multi-scale natural wave crest foam
-        float foamNoise = sin(p1.x * 2.8 + p2.y * 2.2) * cos(p2.x * 2.2 - p3.y * 2.5);
-        float crestFoam = smoothstep(0.26, 0.46, vH + foamNoise * 0.05) * 0.75;
-        foam = clamp(foam * 0.85 + crestFoam, 0.0, 1.0);
+        // Natural Gerstner Jacobian Breaking Whitecap Foam
+        float foamNoise = sin(vW.x * 3.2 + vW.z * 2.4 + uTime * 0.8) * cos(vW.z * 2.8 - vW.x * 2.1 - uTime * 0.6);
+        float crestWhitecap = vCrest * smoothstep(-0.3, 0.4, foamNoise);
+        foam = clamp(foam * 0.85 + crestWhitecap * 0.95, 0.0, 1.0);
 
-        // Biome distance gradation: Center shallow turquoise vs open ocean abyss
+        // Deep oceanic Beer-Lambert absorption gradient
         float distCenter = length(vW.xz);
-        vec3 deepBiome = mix(uDeep, vec3(0.02, 0.08, 0.14), smoothstep(120.0, 320.0, distCenter));
-        vec3 shallowBiome = mix(vec3(0.12, 0.72, 0.68), uShallow, smoothstep(50.0, 220.0, distCenter));
+        vec3 deepBiome = mix(vec3(0.015, 0.05, 0.095), vec3(0.005, 0.022, 0.048), smoothstep(100.0, 360.0, distCenter));
+        vec3 shallowBiome = mix(vec3(0.08, 0.62, 0.64), uShallow, smoothstep(40.0, 200.0, distCenter));
 
-        vec3 base = mix(deepBiome, shallowBiome, clamp(shallow * 0.85 + vH * 0.45 + 0.18, 0.0, 1.0));
-        
-        // Translucent Subsurface Scattering (sunlight piercing wave crests)
-        float sssSun = pow(max(dot(-V, uSunDir), 0.0), 2.8);
-        float waveTranslucency = max(vH + 0.3, 0.0);
-        vec3 sssCol = mix(shallowBiome, vec3(0.18, 0.95, 0.8), 0.5);
-        base += sssCol * sssSun * waveTranslucency * 0.55 * uSunI;
+        float depthGrad = clamp(shallow * 0.8 + (vH + 1.2) * 0.26 + 0.16, 0.0, 1.0);
+        vec3 base = mix(deepBiome, shallowBiome, depthGrad);
 
+        // Translucent Subsurface Scattering: sunlight piercing wave crests with luminous emerald jade glow
+        float sssSun = pow(max(dot(-V, uSunDir), 0.0), 3.0);
+        float waveTranslucency = max(vH + 0.8, 0.0) * 0.35;
+        vec3 sssCol = vec3(0.12, 0.92, 0.78);
+        base += sssCol * sssSun * waveTranslucency * 0.85 * uSunI;
+
+        // Sky reflection
         vec3 R = reflect(-V, N);
-        vec3 skyRef = mix(uSkyLo, uSkyHi, clamp(R.y * 1.5 + 0.1, 0.0, 1.0));
+        vec3 skyRef = mix(uSkyLo, uSkyHi, clamp(R.y * 1.6 + 0.15, 0.0, 1.0));
+        vec3 col = mix(base, skyRef, clamp(fres, 0.08, 0.92));
 
-        vec3 col = mix(base, skyRef, clamp(fres, 0.18, 0.88));
-
+        // Anisotropic Sun Specular Glitter Path
         vec3 H = normalize(V + uSunDir);
         float NdotH = max(dot(N, H), 0.0);
-        float specSharp = pow(NdotH, 280.0) * 4.5;
-        float specBroad = pow(NdotH, 28.0) * 0.55;
-        col += uSunColor * (specSharp + specBroad) * uSunI;
+        float specSharp = pow(NdotH, 360.0) * 5.5;
+        float specGlitter = pow(NdotH, 36.0) * 0.95 * (0.8 + 0.4 * sin(p1.x * 8.0 + p2.y * 6.0));
+        col += uSunColor * (specSharp + specGlitter) * uSunI;
 
         col *= (1.0 - shade * 0.25);
 
-        vec3 foamCol = vec3(0.92, 0.96, 0.98) * (0.55 + 0.45 * uDay);
-        col = mix(col, foamCol, foam * 0.82);
+        // Breaking Whitecap Foam
+        vec3 foamCol = vec3(0.95, 0.98, 1.0) * (0.6 + 0.4 * uDay);
+        col = mix(col, foamCol, foam * 0.9);
 
-        col = mix(col, deepBiome * 0.35, smoothstep(uBound, uBound + 120.0, distCenter));
+        // Outer abyss boundary
+        col = mix(col, deepBiome * 0.3, smoothstep(uBound, uBound + 120.0, distCenter));
 
+        // Atmospheric distance fog
         float fd = length(cameraPosition - vW);
         float ff = 1.0 - exp(-uFogDensity * uFogDensity * fd * fd);
         col = mix(col, uFogColor, clamp(ff, 0.0, 1.0));
@@ -1415,7 +1578,7 @@ function buildWater(){
         gl_FragColor = vec4(col, 1.0);
       }`
   });
-  water=new THREE.Mesh(new THREE.PlaneGeometry(1500,1500,128,128),mat);
+  water=new THREE.Mesh(new THREE.PlaneGeometry(1600,1600,180,180),mat);
   water.rotation.x=-Math.PI/2; scene.add(water);
 }
 
@@ -1770,6 +1933,17 @@ function envUpdate(){
       else waterU.uStructs.value[i].set(9999,9999,0,0);
     }
     if(waterU.uWindDir) waterU.uWindDir.value.set(WIND.vx, WIND.vz).normalize();
+    if(waterU.uWaveMult) waterU.uWaveMult.value = getWaveMultiplier();
+  }
+  // Center high-density focal water grid around boat
+  if(water){
+    const snap = 2.0;
+    water.position.x = Math.floor(boatState.x / snap) * snap;
+    water.position.z = Math.floor(boatState.z / snap) * snap;
+  }
+  if(boatState.splashT > 0){
+    boatState.splashT = Math.max(0, boatState.splashT - 0.03);
+    if(gradePass) gradePass.uniforms.uSplash.value = boatState.splashT;
   }
   const day=G.day, d=clamp(day,0,1), dusk=1-d;
   const sd=sunDir(day);
@@ -2136,58 +2310,71 @@ function updateWake(dt,fx,fz){
 /* ---------------- boat visual & camera (Hydrodynamic Simulation) ---------------- */
 function boatVisual(dt){
   const fx=Math.sin(boatState.h), fz=Math.cos(boatState.h);
+  const wMult = getWaveMultiplier();
   
   // Wave height sampling at 5 hydrodynamic hull points
-  const hCenter = waveH(boatState.x, boatState.z, G.t);
-  const hBow = waveH(boatState.x + fx*3.2, boatState.z + fz*3.2, G.t);
-  const hStern = waveH(boatState.x - fx*2.5, boatState.z - fz*2.5, G.t);
-  const hPort = waveH(boatState.x - fz*1.5, boatState.z + fx*1.5, G.t);
-  const hStar = waveH(boatState.x + fz*1.5, boatState.z - fx*1.5, G.t);
+  const hCenter = waveH(boatState.x, boatState.z, G.t, wMult);
+  const hBow = waveH(boatState.x + fx*3.5, boatState.z + fz*3.5, G.t, wMult);
+  const hStern = waveH(boatState.x - fx*2.7, boatState.z - fz*2.7, G.t, wMult);
+  const hPort = waveH(boatState.x - fz*1.7, boatState.z + fx*1.7, G.t, wMult);
+  const hStar = waveH(boatState.x + fz*1.7, boatState.z - fx*1.7, G.t, wMult);
 
   // Buoyant Heave (Spring-mass-damper vertical displacement)
-  const targetY = G.water + (hCenter*0.4 + (hBow + hStern)*0.2 + (hPort + hStar)*0.1) + 0.34;
+  const targetY = G.water + (hCenter*0.42 + (hBow + hStern)*0.22 + (hPort + hStar)*0.07) + 0.34;
   if(boatState.curY === undefined) boatState.curY = targetY;
   if(boatState.vy === undefined) boatState.vy = 0;
   
-  const buoyantForce = (targetY - boatState.curY) * 36.0;
-  const dampForce = -boatState.vy * 8.5;
+  const diffY = targetY - boatState.curY;
+  const buoyantForce = diffY > 0 ? diffY * 42.0 : diffY * 26.0;
+  const dampForce = -boatState.vy * 9.2;
   boatState.vy += (buoyantForce + dampForce) * dt;
   boatState.curY += boatState.vy * dt;
   boatState.bobY = boatState.curY;
   boat.position.set(boatState.x, boatState.curY, boatState.z);
 
   // Hydrodynamic Pitch & Roll with longitudinal/transverse slopes
-  const pitchSlope = (hBow - hStern) / 5.7;
-  const rollSlope = (hPort - hStar) / 3.0;
+  const pitchSlope = (hBow - hStern) / 6.2;
+  const rollSlope = (hPort - hStar) / 3.4;
 
   let turn = 0;
   if(G.mode === 'playing'){
     turn = (keys.KeyA||keys.ArrowLeft?1:0) - (keys.KeyD||keys.ArrowRight?1:0) - input.jx;
   }
-  const turnBank = -turn * 0.36 * Math.min(1, Math.abs(boatState.speed)/22);
-  const speedLift = Math.max(0, boatState.speed / 42.0) * 0.09;
+  const turnBank = -turn * 0.42 * Math.min(1, Math.abs(boatState.speed)/22);
+  const speedLift = Math.max(0, boatState.speed / 40.0) * 0.12;
 
-  const targetPitch = -Math.atan(pitchSlope) * 1.15 + speedLift;
-  const targetRoll = Math.atan(rollSlope) * 0.95 + turnBank;
+  const targetPitch = -Math.atan(pitchSlope) * 1.25 + speedLift;
+  const targetRoll = Math.atan(rollSlope) * 1.05 + turnBank;
+
+  // Dynamic wave surfing boost / hill climb drag
+  if(G.mode === 'playing'){
+    if(pitchSlope < -0.08){
+      boatState.speed += Math.min(18.0, -pitchSlope * 24.0) * dt; // surfing down swell
+    }else if(pitchSlope > 0.12){
+      boatState.speed -= Math.min(20.0, pitchSlope * 18.0) * dt; // climbing wave wall
+    }
+  }
 
   // Angular inertia with rotational damping
   if(boatState.pitchVel === undefined) boatState.pitchVel = 0;
   if(boatState.rollVel === undefined) boatState.rollVel = 0;
-  boatState.pitchVel += ((targetPitch - boatState.pitch) * 48.0 - boatState.pitchVel * 10.5) * dt;
+  boatState.pitchVel += ((targetPitch - boatState.pitch) * 52.0 - boatState.pitchVel * 11.5) * dt;
   boatState.pitch += boatState.pitchVel * dt;
-  boatState.rollVel += ((targetRoll - boatState.roll) * 42.0 - boatState.rollVel * 9.5) * dt;
+  boatState.rollVel += ((targetRoll - boatState.roll) * 46.0 - boatState.rollVel * 10.0) * dt;
   boatState.roll += boatState.rollVel * dt;
 
   boat.rotation.set(boatState.pitch, boatState.h, boatState.roll, 'YXZ');
 
-  // Wave crest slamming impact & realistic bow spray
+  // Violent wave slamming & seafoam explosion
   const sp = Math.abs(boatState.speed);
-  if(sp > 12 && boatState.vy < -1.35 && G.t - (boatState._lastSlap || 0) > 0.42){
+  if(sp > 10 && boatState.vy < -1.4 && G.t - (boatState._lastSlap || 0) > 0.38){
     boatState._lastSlap = G.t;
+    boatState.splashT = 1.0;
     if(sfx.slap) sfx.slap();
-    G.shake = Math.max(G.shake, 0.05);
-    spawnBurst(boatState.x + fx*2.8 - fz*1.1, G.water + hBow + 0.3, boatState.z + fz*2.8 + fx*1.1, 4, 3, 3, PAL.seafoam, 1.6, 0.4);
-    spawnBurst(boatState.x + fx*2.8 + fz*1.1, G.water + hBow + 0.3, boatState.z + fz*2.8 - fx*1.1, 4, 3, 3, PAL.seafoam, 1.6, 0.4);
+    G.shake = Math.max(G.shake, G.qual === 'ultra' ? 0.22 : 0.12);
+    const nP = G.qual === 'ultra' ? 9 : 5;
+    spawnBurst(boatState.x + fx*3.2 - fz*1.4, G.water + hBow + 0.4, boatState.z + fz*3.2 + fx*1.4, nP, 5, 4.5, PAL.seafoam, 2.2, 0.55);
+    spawnBurst(boatState.x + fx*3.2 + fz*1.4, G.water + hBow + 0.4, boatState.z + fz*3.2 - fx*1.4, nP, 5, 4.5, PAL.seafoam, 2.2, 0.55);
   }
 
   // Sail & Pennant Aerodynamic interaction with Unified Wind
@@ -2462,16 +2649,27 @@ function resumeGame(){
 /* ---------------- quality & resize ---------------- */
 function applyQuality(q,silent){
   G.qual=q; store.set('qual',q);
-  const maxPR=COARSE?1.25:1.5; const pr=Math.min(devicePixelRatio||1,q==='low'?1:q==='med'?Math.min(1.25,maxPR):maxPR);
+  const isUltra = q==='ultra';
+  const isHigh = q==='high' || isUltra;
+  const isMed = q==='med';
+  const maxPR = COARSE ? 1.35 : (isUltra ? 2.0 : 1.5);
+  const pr = Math.min(devicePixelRatio||1, q==='low'?1.0:(isMed?Math.min(1.25,maxPR):maxPR));
   renderer.setPixelRatio(pr); composer.setPixelRatio(pr);
-  bloomPass.enabled=q!=='low';
-  gradePass.uniforms.uCA.value=q==='high'?0.0012:0.0006;
-  const shadows=q!=='low';
+  
+  if(waterU && waterU.uWaveMult){
+    waterU.uWaveMult.value = isUltra ? 1.45 : (isHigh ? 1.15 : 0.90);
+  }
+  
+  bloomPass.enabled = q!=='low';
+  bloomPass.strength = isUltra ? 0.48 : (isHigh ? 0.42 : 0.35);
+  gradePass.uniforms.uCA.value = isUltra ? 0.0016 : (isHigh ? 0.0011 : 0.0006);
+  
+  const shadows = q!=='low';
   if(renderer.shadowMap.enabled!==shadows){
     renderer.shadowMap.enabled=shadows;
     scene.traverse(o=>{if(o.material)o.material.needsUpdate=true;});
   }
-  const ms=1024;
+  const ms = isUltra ? 2048 : (isHigh ? 1024 : 512);
   if(sunLight.shadow.mapSize.x!==ms){
     sunLight.shadow.mapSize.set(ms,ms);
     if(sunLight.shadow.map){sunLight.shadow.map.dispose();sunLight.shadow.map=null;}
